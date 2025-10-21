@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import Papa from 'papaparse';
 import {
   Upload,
@@ -12,10 +12,11 @@ import {
   XCircle,
 } from 'lucide-react';
 
-const supabase = createClient(
+const supabase: SupabaseClient = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
 const BUCKET = 'datasets';
 
 type Row = {
@@ -24,6 +25,14 @@ type Row = {
   long_form: string;
   domain: string;
   completed: boolean;
+};
+
+type StorageFile = {
+  name: string;
+  id?: string;
+  updated_at?: string;
+  created_at?: string;
+  last_accessed_at?: string;
 };
 
 const DOMAIN_OPTIONS = [
@@ -39,7 +48,7 @@ const DOMAIN_OPTIONS = [
 ];
 
 export default function Page() {
-  const [files, setFiles] = useState<any[]>([]);
+  const [files, setFiles] = useState<StorageFile[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [currentTab, setCurrentTab] = useState<'notCompleted' | 'completed'>('notCompleted');
   const [activeFile, setActiveFile] = useState<string | null>(null);
@@ -51,7 +60,7 @@ export default function Page() {
 
   async function listFiles() {
     const { data, error } = await supabase.storage.from(BUCKET).list('', { limit: 1000 });
-    if (!error && data) setFiles(data);
+    if (!error && data) setFiles(data as StorageFile[]);
   }
 
   async function uploadFile(file: File) {
@@ -60,8 +69,9 @@ export default function Page() {
       const { error } = await supabase.storage.from(BUCKET).upload(file.name, file, { upsert: true });
       if (error) throw error;
       await listFiles();
-    } catch (err: any) {
-      alert('Upload failed: ' + err.message);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      alert('Upload failed: ' + message);
     } finally {
       setLoading(false);
     }
@@ -75,43 +85,50 @@ export default function Page() {
       setActiveFile(name);
       const text = await data.text();
       const parsed = Papa.parse<Row>(text, { header: true, skipEmptyLines: true });
-      const normalized = parsed.data.map((r: any) => ({
+      const normalized: Row[] = parsed.data.map((r) => ({
         sentence: r.sentence ?? '',
-        abbreviation: r.abbreviation ?? r.abbr ?? '',
-        long_form: r.long_form ?? r.long ?? '',
+        abbreviation: r.abbreviation ?? '',
+        long_form: r.long_form ?? '',
         domain: r.domain ?? '',
-        completed: ['true', '1', 'yes', 'y'].includes((r.completed ?? '').toString().toLowerCase()),
+        completed: ['true', '1', 'yes', 'y'].includes(
+          (r.completed ?? '').toString().toLowerCase()
+        ),
       }));
       setRows(normalized);
-    } catch (err: any) {
-      alert('Failed to download file: ' + err.message);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      alert('Failed to load file: ' + message);
     } finally {
       setLoading(false);
     }
   }
 
   function updateRow(idx: number, key: keyof Row, value: string | boolean) {
-    setRows(prev => {
+    setRows((prev) => {
       const copy = [...prev];
-      const visible = copy.filter(r => r.completed === (currentTab === 'completed'));
+      const visible = copy.filter((r) => r.completed === (currentTab === 'completed'));
       const row = visible[idx];
-      const globalIdx = copy.findIndex(r => r === row);
+      const globalIdx = copy.findIndex((r) => r === row);
       copy[globalIdx] = { ...row, [key]: value };
       return copy;
     });
   }
 
   function toggleStatus(idx: number) {
-    updateRow(idx, 'completed', !(rows.filter(r => r.completed === (currentTab === 'completed'))[idx]?.completed));
+    updateRow(
+      idx,
+      'completed',
+      !rows.filter((r) => r.completed === (currentTab === 'completed'))[idx]?.completed
+    );
   }
 
   function removeRow(idx: number) {
     if (!confirm('Remove this row?')) return;
-    setRows(prev => {
+    setRows((prev) => {
       const copy = [...prev];
-      const visible = copy.filter(r => r.completed === (currentTab === 'completed'));
+      const visible = copy.filter((r) => r.completed === (currentTab === 'completed'));
       const row = visible[idx];
-      return copy.filter(r => r !== row);
+      return copy.filter((r) => r !== row);
     });
   }
 
@@ -121,24 +138,28 @@ export default function Page() {
       const csv = Papa.unparse(rows);
       const blob = new Blob([csv], { type: 'text/csv' });
 
-      const completedCount = rows.filter(r => r.completed).length;
+      const completedCount = rows.filter((r) => r.completed).length;
       const totalCount = rows.length;
       const progress = totalCount ? Math.round((completedCount / totalCount) * 100) : 0;
 
-      // Smart file naming logic
-      let newName;
+      // ✅ Safe smart file naming
+      let newName: string;
       if (progress === 100) {
         newName = activeFile.replace('.csv', '') + '{corrected}.csv';
       } else {
-        newName = activeFile.replace('.csv', '') + `{${progress}%}.csv`;
+        newName = activeFile.replace('.csv', '') + `{${progress}-complete}.csv`;
       }
 
-      const { error } = await supabase.storage.from(BUCKET).upload(newName, blob, { upsert: true });
+      // Avoid special characters that can break Supabase URLs
+      const safeName = newName.replace(/[%]/g, '-').replace(/\s+/g, '_');
+
+      const { error } = await supabase.storage.from(BUCKET).upload(safeName, blob, { upsert: true });
       if (error) throw error;
-      alert(`Saved as ${newName}`);
+      alert(`✅ Saved as ${safeName}`);
       listFiles();
-    } catch (err: any) {
-      alert('Save failed: ' + (err.message || 'Network or permission issue.'));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      alert('Save failed: ' + message);
     }
   }
 
@@ -161,10 +182,10 @@ export default function Page() {
     listFiles();
   }
 
-  const completedCount = rows.filter(r => r.completed).length;
+  const completedCount = rows.filter((r) => r.completed).length;
   const totalCount = rows.length;
   const progress = totalCount ? Math.round((completedCount / totalCount) * 100) : 0;
-  const filteredRows = rows.filter(r => r.completed === (currentTab === 'completed'));
+  const filteredRows = rows.filter((r) => r.completed === (currentTab === 'completed'));
 
   return (
     <main className="min-h-screen bg-[#f9fafb] py-10 px-6 font-[Inter] text-gray-800">
@@ -209,7 +230,7 @@ export default function Page() {
             type="file"
             accept=".csv"
             disabled={loading}
-            onChange={e => {
+            onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) uploadFile(file);
             }}
@@ -229,7 +250,7 @@ export default function Page() {
                 </tr>
               </thead>
               <tbody>
-                {files.map(f => (
+                {files.map((f) => (
                   <tr key={f.name} className="border-t hover:bg-gray-50">
                     <td className="p-3">{f.name}</td>
                     <td className="p-3 text-center flex justify-center gap-2">
@@ -280,7 +301,7 @@ export default function Page() {
         {/* Tabs */}
         {rows.length > 0 && (
           <div className="flex gap-2">
-            {['notCompleted', 'completed'].map(tab => (
+            {['notCompleted', 'completed'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setCurrentTab(tab as 'notCompleted' | 'completed')}
@@ -303,9 +324,9 @@ export default function Page() {
               <thead className="bg-gray-50 sticky top-0">
                 <tr className="text-gray-700">
                   <th className="p-3 text-left w-1/3">Sentence</th>
-                  <th className="p-3 text-left w-1/10">Abbrev.</th> {/* Less space */}
+                  <th className="p-3 text-left w-1/12">Abbrev.</th>
                   <th className="p-3 text-left w-1/3">Long Form</th>
-                  <th className="p-3 text-left w-1/4">Domain</th> {/* More space */}
+                  <th className="p-3 text-left w-1/4">Domain</th>
                   <th className="p-3 text-center w-1/5">Actions</th>
                 </tr>
               </thead>
@@ -318,16 +339,16 @@ export default function Page() {
                       <input
                         className="border border-gray-300 rounded-lg px-3 py-2 w-full focus:ring-2 focus:ring-blue-400 outline-none transition"
                         value={row.long_form}
-                        onChange={e => updateRow(i, 'long_form', e.target.value)}
+                        onChange={(e) => updateRow(i, 'long_form', e.target.value)}
                       />
                     </td>
                     <td className="p-3">
                       <select
                         className="border border-gray-300 rounded-lg px-3 py-2 w-full focus:ring-2 focus:ring-blue-400 outline-none transition"
                         value={row.domain}
-                        onChange={e => updateRow(i, 'domain', e.target.value)}
+                        onChange={(e) => updateRow(i, 'domain', e.target.value)}
                       >
-                        {DOMAIN_OPTIONS.map(opt => (
+                        {DOMAIN_OPTIONS.map((opt) => (
                           <option key={opt} value={opt}>
                             {opt || '—'}
                           </option>
